@@ -48,6 +48,12 @@ class ClaudeMonitor {
     private var pollingTimer: Timer?
     private var audioPlayer: AVAudioPlayer?
     private var lastSoundPlayedAt: Date = .distantPast
+    /// Sessions pending confirmation — wait one cycle before notifying
+    private var pendingIdle: Set<Int> = []
+    /// When each session started working (to filter short responses)
+    private var workingStartedAt: [Int: Date] = [Int: Date]()
+    /// Cooldown: don't notify same session within 10 seconds
+    private var lastNotifiedAt: [Int: Date] = [Int: Date]()
 
     func start() {
         poll()
@@ -76,16 +82,52 @@ class ClaudeMonitor {
 
         for session in sessions {
             let oldStatus = oldStatuses[session.id]
+
+            // Track when session started working
+            if session.status == .working && oldStatus != .working {
+                workingStartedAt[session.id] = Date()
+            }
+
             if let old = oldStatus {
-                if old == .working && (session.status == .taskCompleted || session.status == .idle) {
-                    onTaskCompleted(session: session)
-                } else if old == .working && session.status == .waitingForInput {
-                    onWaitingForInput(session: session)
+                if old == .working && session.status == .waitingForInput {
+                    // Hook confirmed: permission/attention — notify immediately (no min time)
+                    pendingIdle.remove(session.id)
+                    workingStartedAt.removeValue(forKey: session.id)
+                    notifyIfCooldown(session: session, isWaiting: true)
+                } else if old == .working && session.status == .idle {
+                    // CPU dropped — wait one cycle for hook
+                    pendingIdle.insert(session.id)
+                } else if pendingIdle.contains(session.id) && session.status != .working {
+                    // Second cycle confirmed
+                    pendingIdle.remove(session.id)
+                    let workedFor = workingStartedAt[session.id].map { Date().timeIntervalSince($0) } ?? 0
+                    workingStartedAt.removeValue(forKey: session.id)
+                    if session.status == .waitingForInput {
+                        notifyIfCooldown(session: session, isWaiting: true)
+                    } else if workedFor > 10 {
+                        // Only notify "done" if worked for >10 seconds
+                        notifyIfCooldown(session: session, isWaiting: false)
+                    }
+                } else if session.status == .working {
+                    pendingIdle.remove(session.id)
                 }
             }
         }
 
         NotificationCenter.default.post(name: .DuckyStatusChanged, object: nil)
+    }
+
+    private func notifyIfCooldown(session: ClaudeSession, isWaiting: Bool) {
+        let now = Date()
+        if let last = lastNotifiedAt[session.id], now.timeIntervalSince(last) < 10 {
+            return // cooldown active
+        }
+        lastNotifiedAt[session.id] = now
+        if isWaiting {
+            onWaitingForInput(session: session)
+        } else {
+            onTaskCompleted(session: session)
+        }
     }
 
     private func onTaskCompleted(session: ClaudeSession) {
@@ -159,6 +201,9 @@ class ClaudeMonitor {
                       let status = json["status"] as? String else { continue }
                 let message = json["message"] as? String ?? ""
                 let ts = json["timestamp"] as? Int ?? 0
+                // Only use hook state if it's recent (< 10 seconds old)
+                let age = Int(Date().timeIntervalSince1970) - ts
+                guard age < 10 else { continue }
                 hookStates[sid] = (status, message, ts)
             }
         }
@@ -193,25 +238,24 @@ class ClaudeMonitor {
             var hookMessage: String?
             var hookStatusRaw: String?
 
-            if let hs = hookState {
-                hookStatusRaw = hs.status
-                hookMessage = hs.message.isEmpty ? nil : hs.message
-                switch hs.status {
-                case "working":
-                    status = .working
-                case "completed":
-                    status = .taskCompleted
-                case "permission", "attention":
+            // Hooks only provide permission/attention states.
+            // Working/idle always comes from CPU.
+            let cpuStatus: ClaudeSessionStatus = cpuUsage > 5.0 ? .working : .idle
+
+            if let hs = hookState, (hs.status == "permission" || hs.status == "attention") {
+                // Hook says waiting — but only if CPU is low (Claude actually stopped)
+                if cpuUsage <= 5.0 {
                     status = .waitingForInput
-                default:
-                    // Fallback to CPU
-                    status = cpuUsage > 5.0 ? .working : .idle
+                    hookStatusRaw = hs.status
+                    hookMessage = hs.message.isEmpty ? nil : hs.message
+                } else {
+                    // CPU still high, hook might be stale
+                    status = .working
                     hookStatusRaw = nil
                     hookMessage = nil
                 }
             } else {
-                // No hook data, use CPU
-                status = cpuUsage > 5.0 ? .working : .idle
+                status = cpuStatus
                 hookMessage = nil
                 hookStatusRaw = nil
             }
