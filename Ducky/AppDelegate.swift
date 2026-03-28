@@ -44,7 +44,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let sessions = claudeMonitor.sessions
         if sessions.isEmpty {
-            let noSessions = NSMenuItem(title: "  Sin sesiones activas", action: nil, keyEquivalent: "")
+            let noSessions = NSMenuItem(title: "  No active sessions", action: nil, keyEquivalent: "")
             noSessions.isEnabled = false
             menu.addItem(noSessions)
         } else {
@@ -53,12 +53,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let waiting = sessions.filter { $0.status == .waitingForInput }.count
 
             let summaryParts = [
-                working > 0 ? "\(working) trabajando" : nil,
+                working > 0 ? "\(working) working" : nil,
                 idle > 0 ? "\(idle) idle" : nil,
-                waiting > 0 ? "\(waiting) esperando" : nil
+                waiting > 0 ? "\(waiting) waiting" : nil
             ].compactMap { $0 }
 
-            let summaryItem = NSMenuItem(title: "  \(sessions.count) sesiones: \(summaryParts.joined(separator: ", "))", action: nil, keyEquivalent: "")
+            let summaryItem = NSMenuItem(title: "  \(sessions.count) sessions: \(summaryParts.joined(separator: ", "))", action: nil, keyEquivalent: "")
             summaryItem.isEnabled = false
             menu.addItem(summaryItem)
 
@@ -73,7 +73,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // -- Settings section --
         let notchItem = NSMenuItem(
-            title: "Mostrar notch",
+            title: "Show Notch",
             action: #selector(toggleNotch),
             keyEquivalent: ""
         )
@@ -82,7 +82,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(notchItem)
 
         let soundItem = NSMenuItem(
-            title: "Sonido al completar",
+            title: "Sound Notifications",
             action: #selector(toggleSound),
             keyEquivalent: ""
         )

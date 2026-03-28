@@ -18,9 +18,9 @@ enum ClaudeSessionStatus: Equatable {
 
     var label: String {
         switch self {
-        case .working: return "trabajando"
-        case .taskCompleted: return "listo"
-        case .waitingForInput: return "necesita atención"
+        case .working: return "working"
+        case .taskCompleted: return "done"
+        case .waitingForInput: return "needs attention"
         case .idle: return "idle"
         }
     }
@@ -111,10 +111,10 @@ class ClaudeMonitor {
         let message: String
         if session.hookStatus == "permission" {
             emoji = "🔐"
-            message = session.hookMessage ?? "necesita permiso"
+            message = session.hookMessage ?? "needs permission"
         } else {
             emoji = "⚠️"
-            message = session.hookMessage ?? "necesita atención"
+            message = session.hookMessage ?? "needs attention"
         }
         NotificationCenter.default.post(
             name: .DuckySessionEvent,

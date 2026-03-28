@@ -379,7 +379,7 @@ struct NotchToastView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.white)
                 if message.isEmpty {
-                    Text("— listo")
+                    Text("— done")
                         .font(.system(size: 12))
                         .foregroundColor(.white.opacity(0.6))
                 }
