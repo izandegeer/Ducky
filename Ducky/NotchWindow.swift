@@ -137,15 +137,16 @@ class NotchWindow: NSPanel {
                   let name = info["name"] as? String,
                   let emoji = info["emoji"] as? String else { return }
             let message = info["message"] as? String ?? ""
-            self?.showToast(name: name, emoji: emoji, message: message)
+            let duration = info["duration"] as? Double ?? 0
+            self?.showToast(name: name, emoji: emoji, message: message, duration: duration)
         }
     }
 
-    private func showToast(name: String, emoji: String, message: String) {
+    private func showToast(name: String, emoji: String, message: String, duration: Double = 0) {
         if toastWindow == nil {
             toastWindow = NotchToastWindow()
         }
-        toastWindow?.show(name: name, emoji: emoji, message: message, below: frame)
+        toastWindow?.show(name: name, emoji: emoji, message: message, duration: duration, below: frame)
     }
 
     // MARK: - Status observation
@@ -321,12 +322,12 @@ class NotchToastWindow: NSPanel {
 
     private var sessionToFocus: ClaudeSession?
 
-    func show(name: String, emoji: String, message: String, below notchFrame: NSRect) {
+    func show(name: String, emoji: String, message: String, duration: Double = 0, below notchFrame: NSRect) {
         hideTimer?.invalidate()
 
         sessionToFocus = ClaudeMonitor.shared.sessions.first { $0.displayName == name }
 
-        let view = NotchToastView(name: name, emoji: emoji, message: message)
+        let view = NotchToastView(name: name, emoji: emoji, message: message, duration: duration)
         if hostView == nil {
             hostView = NSHostingView(rootView: view)
             contentView = hostView
@@ -374,30 +375,57 @@ struct NotchToastView: View {
     let name: String
     let emoji: String
     let message: String
+    var duration: Double = 0
+
+    private var mood: DuckyMood {
+        switch emoji {
+        case "✅": return .celebrating
+        case "🔐", "⚠️": return .alert
+        default: return .chillin
+        }
+    }
+
+    private var durationText: String? {
+        guard duration > 0 else { return nil }
+        let mins = Int(duration) / 60
+        let secs = Int(duration) % 60
+        if mins > 0 {
+            return "(\(mins)m \(secs)s)"
+        }
+        return "(\(secs)s)"
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Text(emoji)
-                    .font(.system(size: 13))
-                Text(name)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.white)
-                if message.isEmpty {
-                    Text("— done")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.6))
+        HStack(spacing: 8) {
+            DuckyAvatar(mood: mood, size: 24)
+
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white)
+                    if message.isEmpty {
+                        Text("— done")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                    if let dt = durationText {
+                        Text(dt)
+                            .font(.system(size: 10))
+                            .foregroundColor(.white.opacity(0.4))
+                    }
+                }
+                if !message.isEmpty {
+                    Text(message)
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.7))
+                        .lineLimit(2)
                 }
             }
-            if !message.isEmpty {
-                Text(message)
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.7))
-                    .lineLimit(2)
-            }
+            Spacer()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background(Color.black)
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 12, bottomTrailingRadius: 12, topTrailingRadius: 0))
@@ -438,7 +466,8 @@ class NotchHoverWindow: NSPanel {
         let width = notchFrame.width
         let sessions = ClaudeMonitor.shared.sessions
         let rowHeight: CGFloat = 28
-        let height: CGFloat = CGFloat(sessions.count) * rowHeight + 16
+        let duckHeight: CGFloat = 100 // big duck + padding
+        let height: CGFloat = duckHeight + CGFloat(sessions.count) * rowHeight + 16
         let x = notchFrame.origin.x
 
         setFrame(NSRect(x: x, y: notchFrame.minY, width: width, height: 0), display: true)
@@ -472,43 +501,71 @@ struct NotchHoverView: View {
     let sessions: [ClaudeSession]
     var onTap: ((ClaudeSession) -> Void)?
 
+    private var duckyMood: DuckyMood {
+        let state = NotchDisplayState.current
+        switch state {
+        case .working: return .working
+        case .taskCompleted: return .celebrating
+        case .waitingForInput: return .alert
+        case .idle:
+            return sessions.isEmpty ? .sleeping : .chillin
+        }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(sessions) { session in
-                HStack(spacing: 8) {
-                    Text(session.status.emoji)
-                        .font(.system(size: 13))
-                    Text(session.displayName)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.white)
-                    Spacer()
-                    Text(session.status.label)
-                        .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.5))
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    onTap?(session)
-                }
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.white.opacity(0.001)) // invisible but hittable
-                )
-                .onHover { hovering in
-                    if hovering {
-                        NSCursor.pointingHand.push()
-                    } else {
-                        NSCursor.pop()
+        VStack(spacing: 8) {
+            // Big duck
+            DuckyAvatar(mood: duckyMood, size: 80)
+                .padding(.top, 12)
+                .padding(.bottom, 4)
+
+            // Sessions list
+            if !sessions.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(sessions) { session in
+                        HStack(spacing: 8) {
+                            Text(session.status.emoji)
+                                .font(.system(size: 13))
+                            Text(session.displayName)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.white)
+                            Spacer()
+                            if let since = session.statusSince {
+                                Text(Self.formatDuration(Date().timeIntervalSince(since)))
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.35))
+                            }
+                            Text(session.status.label)
+                                .font(.system(size: 10))
+                                .foregroundColor(.white.opacity(0.5))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            onTap?(session)
+                        }
+                        .onHover { hovering in
+                            if hovering {
+                                NSCursor.pointingHand.push()
+                            } else {
+                                NSCursor.pop()
+                            }
+                        }
                     }
                 }
             }
         }
-        .padding(.vertical, 8)
+        .padding(.bottom, 10)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 12, bottomTrailingRadius: 12, topTrailingRadius: 0))
+    }
+
+    static func formatDuration(_ seconds: TimeInterval) -> String {
+        let s = Int(seconds)
+        if s < 60 { return "\(s)s" }
+        return "\(s / 60)m \(s % 60)s"
     }
 }
 
@@ -546,61 +603,36 @@ struct NotchPillContent: View {
     private var displayState: NotchDisplayState { .current }
     private var sessions: [ClaudeSession] { ClaudeMonitor.shared.sessions }
 
+    private var duckyMood: DuckyMood {
+        switch displayState {
+        case .working: return .working
+        case .taskCompleted: return .celebrating
+        case .waitingForInput: return .alert
+        case .idle:
+            return sessions.isEmpty ? .sleeping : .chillin
+        }
+    }
+
     var body: some View {
-        ZStack {
-            if displayState != .idle {
-                HStack(spacing: 6) {
-                    switch displayState {
-                    case .working:
-                        SpinnerView()
-                            .frame(width: 12, height: 12)
-                        let count = sessions.filter { $0.status == .working }.count
-                        if count > 1 {
-                            Text("\(count)")
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                .foregroundColor(.white)
-                        }
-                    case .taskCompleted:
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.green)
-                    case .waitingForInput:
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.yellow)
-                    case .idle:
-                        EmptyView()
-                    }
+        HStack(spacing: 4) {
+            DuckyAvatar(mood: duckyMood, size: 28)
+                .offset(y: -1)
 
-                    Spacer()
+            if displayState != .idle || !sessions.isEmpty {
+                Spacer()
 
-                    let working = sessions.filter { $0.status == .working }.count
-                    if sessions.count > 0 {
-                        Text("\(working)/\(sessions.count)")
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.7))
-                    }
+                let working = sessions.filter { $0.status == .working }.count
+                if sessions.count > 0 {
+                    Text("\(working)/\(sessions.count)")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.7))
                 }
-                .padding(.horizontal, 12)
-                .transition(.opacity)
             }
         }
+        .padding(.horizontal, 10)
         .animation(.easeInOut(duration: 0.25), value: displayState)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .offset(y: -2)
-    }
-}
-
-struct SpinnerView: View {
-    @State private var isAnimating = false
-
-    var body: some View {
-        Circle()
-            .trim(from: 0.05, to: 0.8)
-            .stroke(Color.white, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-            .rotationEffect(.degrees(isAnimating ? 360 : 0))
-            .animation(.linear(duration: 0.8).repeatForever(autoreverses: false), value: isAnimating)
-            .onAppear { isAnimating = true }
     }
 }
 
