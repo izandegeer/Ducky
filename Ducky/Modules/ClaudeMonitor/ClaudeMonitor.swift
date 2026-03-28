@@ -56,6 +56,8 @@ struct ClaudeSession: Identifiable {
     var hookMessage: String?
     var hookStatus: String?
     var tty: String?
+    /// When this session entered its current status
+    var statusSince: Date?
 
     // Status line data
     var rateLimitFiveHour: Double? // percentage 0-100
@@ -100,12 +102,16 @@ class ClaudeMonitor {
     private var pollingTimer: Timer?
     private var audioPlayer: AVAudioPlayer?
     private var lastSoundPlayedAt: Date = .distantPast
-    /// Sessions pending confirmation — wait one cycle before notifying
-    private var pendingIdle: Set<Int> = []
+    /// How many consecutive idle polls per session (must stay idle for multiple cycles)
+    private var idleCount: [Int: Int] = [Int: Int]()
+    /// Number of consecutive idle polls needed before "done" (2s each = 12s total)
+    private static let idleCyclesRequired = 6
     /// When each session started working (to filter short responses)
     private var workingStartedAt: [Int: Date] = [Int: Date]()
     /// Cooldown: don't notify same session within 10 seconds
     private var lastNotifiedAt: [Int: Date] = [Int: Date]()
+    /// Track which hook timestamps we already notified about
+    private var lastHookTimestamp: [String: Int] = [String: Int]()
 
     func start() {
         poll()
@@ -128,6 +134,9 @@ class ClaudeMonitor {
         }
     }
 
+    /// Track statusSince across polls
+    private var statusSinceMap: [Int: Date] = [Int: Date]()
+
     private func updateSessions(_ detected: [ClaudeSession]) {
         let oldStatuses = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.status) })
 
@@ -147,7 +156,16 @@ class ClaudeMonitor {
             }
         }
 
-        sessions = detected
+        // Update statusSince for each session
+        var updated = detected
+        for i in updated.indices {
+            let old = oldStatuses[updated[i].id]
+            if old != updated[i].status || statusSinceMap[updated[i].id] == nil {
+                statusSinceMap[updated[i].id] = Date()
+            }
+            updated[i].statusSince = statusSinceMap[updated[i].id]
+        }
+        sessions = updated
 
         for session in sessions {
             let oldStatus = oldStatuses[session.id]
@@ -155,30 +173,32 @@ class ClaudeMonitor {
             // Track when session started working
             if session.status == .working && oldStatus != .working {
                 workingStartedAt[session.id] = Date()
+                // Clear hook files when session resumes working
+                let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+                let stateFile = home + "/.ducky/sessions/" + session.sessionId + ".json"
+                try? FileManager.default.removeItem(atPath: stateFile)
             }
 
             if let old = oldStatus {
-                if old == .working && session.status == .waitingForInput {
-                    // Hook confirmed: permission/attention — notify immediately (no min time)
-                    pendingIdle.remove(session.id)
+                if session.status == .waitingForInput && old != .waitingForInput {
+                    // Permission/attention — notify immediately
+                    idleCount.removeValue(forKey: session.id)
                     workingStartedAt.removeValue(forKey: session.id)
                     notifyIfCooldown(session: session, isWaiting: true)
-                } else if old == .working && session.status == .idle {
-                    // CPU dropped — wait one cycle for hook
-                    pendingIdle.insert(session.id)
-                } else if pendingIdle.contains(session.id) && session.status != .working {
-                    // Second cycle confirmed
-                    pendingIdle.remove(session.id)
-                    let workedFor = workingStartedAt[session.id].map { Date().timeIntervalSince($0) } ?? 0
-                    workingStartedAt.removeValue(forKey: session.id)
-                    if session.status == .waitingForInput {
-                        notifyIfCooldown(session: session, isWaiting: true)
-                    } else if workedFor > 10 {
-                        // Only notify "done" if worked for >10 seconds
-                        notifyIfCooldown(session: session, isWaiting: false)
-                    }
                 } else if session.status == .working {
-                    pendingIdle.remove(session.id)
+                    // Back to working — reset idle counter
+                    idleCount.removeValue(forKey: session.id)
+                } else if session.status == .idle {
+                    let count = (idleCount[session.id] ?? 0) + 1
+                    idleCount[session.id] = count
+                    if count == Self.idleCyclesRequired, let started = workingStartedAt[session.id] {
+                        // Only notify if we actually tracked working start
+                        let workedFor = Date().timeIntervalSince(started)
+                        workingStartedAt.removeValue(forKey: session.id)
+                        if workedFor > 15 {
+                            notifyIfCooldown(session: session, isWaiting: false)
+                        }
+                    }
                 }
             }
         }
@@ -203,13 +223,15 @@ class ClaudeMonitor {
         if DuckySettings.shared.soundEnabled {
             playSound(named: "taskCompleted")
         }
+        let duration = workingStartedAt[session.id].map { Date().timeIntervalSince($0) } ?? 0
         NotificationCenter.default.post(
             name: .DuckySessionEvent,
             object: nil,
             userInfo: [
                 "name": session.displayName,
                 "emoji": "✅",
-                "message": ""
+                "message": "",
+                "duration": duration
             ]
         )
     }
@@ -227,13 +249,15 @@ class ClaudeMonitor {
             emoji = "⚠️"
             message = session.hookMessage ?? "needs attention"
         }
+        let duration = workingStartedAt[session.id].map { Date().timeIntervalSince($0) } ?? 0
         NotificationCenter.default.post(
             name: .DuckySessionEvent,
             object: nil,
             userInfo: [
                 "name": session.displayName,
                 "emoji": emoji,
-                "message": message
+                "message": message,
+                "duration": duration
             ]
         )
     }
@@ -276,9 +300,6 @@ class ClaudeMonitor {
                       let status = json["status"] as? String else { continue }
                 let message = json["message"] as? String ?? ""
                 let ts = json["timestamp"] as? Int ?? 0
-                // Only use hook state if it's recent (< 10 seconds old)
-                let age = Int(Date().timeIntervalSince1970) - ts
-                guard age < 10 else { continue }
                 hookStates[sid] = (status, message, ts)
             }
         }
@@ -377,24 +398,18 @@ class ClaudeMonitor {
             var hookMessage: String?
             var hookStatusRaw: String?
 
-            // Hooks only provide permission/attention states.
-            // Working/idle always comes from CPU.
-            let cpuStatus: ClaudeSessionStatus = cpuUsage > 5.0 ? .working : .idle
-
-            if let hs = hookState, (hs.status == "permission" || hs.status == "attention") {
-                // Hook says waiting — but only if CPU is low (Claude actually stopped)
-                if cpuUsage <= 5.0 {
-                    status = .waitingForInput
-                    hookStatusRaw = hs.status
-                    hookMessage = hs.message.isEmpty ? nil : hs.message
-                } else {
-                    // CPU still high, hook might be stale
-                    status = .working
-                    hookStatusRaw = nil
-                    hookMessage = nil
-                }
+            // Hooks provide permission/attention. Working/idle from CPU.
+            // Hook state is valid if CPU is low AND it's newer than last time we saw working.
+            if cpuUsage > 5.0 {
+                status = .working
+                hookMessage = nil
+                hookStatusRaw = nil
+            } else if let hs = hookState, (hs.status == "permission" || hs.status == "attention") {
+                status = .waitingForInput
+                hookStatusRaw = hs.status
+                hookMessage = hs.message.isEmpty ? nil : hs.message
             } else {
-                status = cpuStatus
+                status = .idle
                 hookMessage = nil
                 hookStatusRaw = nil
             }
@@ -411,6 +426,7 @@ class ClaudeMonitor {
                 hookMessage: hookMessage,
                 hookStatus: hookStatusRaw,
                 tty: tty,
+                statusSince: nil,
                 rateLimitFiveHour: sl?.rateLimitFiveHour,
                 rateLimitFiveHourResetsAt: sl?.rateLimitFiveHourResetsAt,
                 rateLimitSevenDay: sl?.rateLimitSevenDay,

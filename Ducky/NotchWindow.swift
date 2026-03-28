@@ -138,15 +138,16 @@ class NotchWindow: NSPanel {
                   let name = info["name"] as? String,
                   let emoji = info["emoji"] as? String else { return }
             let message = info["message"] as? String ?? ""
-            self?.showToast(name: name, emoji: emoji, message: message)
+            let duration = info["duration"] as? Double ?? 0
+            self?.showToast(name: name, emoji: emoji, message: message, duration: duration)
         }
     }
 
-    private func showToast(name: String, emoji: String, message: String) {
+    private func showToast(name: String, emoji: String, message: String, duration: Double = 0) {
         if toastWindow == nil {
             toastWindow = NotchToastWindow()
         }
-        toastWindow?.show(name: name, emoji: emoji, message: message, below: frame)
+        toastWindow?.show(name: name, emoji: emoji, message: message, duration: duration, below: frame)
     }
 
     // MARK: - Status observation
@@ -286,12 +287,12 @@ class NotchToastWindow: NSPanel {
 
     private var sessionToFocus: ClaudeSession?
 
-    func show(name: String, emoji: String, message: String, below notchFrame: NSRect) {
+    func show(name: String, emoji: String, message: String, duration: Double = 0, below notchFrame: NSRect) {
         hideTimer?.invalidate()
 
         sessionToFocus = ClaudeMonitor.shared.sessions.first { $0.displayName == name }
 
-        let view = NotchToastView(name: name, emoji: emoji, message: message)
+        let view = NotchToastView(name: name, emoji: emoji, message: message, duration: duration)
         if hostView == nil {
             hostView = NSHostingView(rootView: view)
             contentView = hostView
@@ -339,30 +340,57 @@ struct NotchToastView: View {
     let name: String
     let emoji: String
     let message: String
+    var duration: Double = 0
+
+    private var mood: DuckyMood {
+        switch emoji {
+        case "✅": return .celebrating
+        case "🔐", "⚠️": return .alert
+        default: return .chillin
+        }
+    }
+
+    private var durationText: String? {
+        guard duration > 0 else { return nil }
+        let mins = Int(duration) / 60
+        let secs = Int(duration) % 60
+        if mins > 0 {
+            return "(\(mins)m \(secs)s)"
+        }
+        return "(\(secs)s)"
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Text(emoji)
-                    .font(.system(size: 13))
-                Text(name)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.white)
-                if message.isEmpty {
-                    Text("— done")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.6))
+        HStack(spacing: 8) {
+            DuckyAvatar(mood: mood, size: 24)
+
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white)
+                    if message.isEmpty {
+                        Text("— done")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                    if let dt = durationText {
+                        Text(dt)
+                            .font(.system(size: 10))
+                            .foregroundColor(.white.opacity(0.4))
+                    }
+                }
+                if !message.isEmpty {
+                    Text(message)
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.7))
+                        .lineLimit(2)
                 }
             }
-            if !message.isEmpty {
-                Text(message)
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.7))
-                    .lineLimit(2)
-            }
+            Spacer()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background(Color.black)
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 12, bottomTrailingRadius: 12, topTrailingRadius: 0))
@@ -401,12 +429,12 @@ class NotchHoverWindow: NSPanel {
 
     func showBelow(notchFrame: NSRect) {
         let sessions = ClaudeMonitor.shared.sessions
-
         let width: CGFloat = max(notchFrame.width, 520)
         let x = notchFrame.midX - width / 2
 
-        // Calculate height: single-line rows
-        var height: CGFloat = 16 // vertical padding
+        // Calculate height: big duck + single-line rows
+        let duckHeight: CGFloat = 100 // big duck + padding
+        var height: CGFloat = duckHeight + 16 // vertical padding
         for _ in sessions {
             height += 30 // single row height
             height += 4 // spacing between sessions
@@ -444,6 +472,17 @@ struct NotchHoverView: View {
     let sessions: [ClaudeSession]
     var onTap: ((ClaudeSession) -> Void)?
 
+    private var duckyMood: DuckyMood {
+        let state = NotchDisplayState.current
+        switch state {
+        case .working: return .working
+        case .taskCompleted: return .celebrating
+        case .waitingForInput: return .alert
+        case .idle:
+            return sessions.isEmpty ? .sleeping : .chillin
+        }
+    }
+
     private static let numberFormatter: NumberFormatter = {
         let f = NumberFormatter()
         f.numberStyle = .decimal
@@ -463,86 +502,101 @@ struct NotchHoverView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(sessions) { session in
-                HStack(spacing: 6) {
-                    // LEFT group: icon + name + branch
-                    Image(systemName: session.status.sfSymbol)
-                        .font(.system(size: 11))
-                        .foregroundColor(session.status.sfSymbolColor)
-                        .frame(width: 14)
+        VStack(spacing: 8) {
+            // Big duck
+            DuckyAvatar(mood: duckyMood, size: 80)
+                .padding(.top, 12)
+                .padding(.bottom, 4)
 
-                    Text(session.displayName)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
+            // Sessions list
+            if !sessions.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(sessions) { session in
+                        HStack(spacing: 6) {
+                            // LEFT group: icon + name + branch
+                            Image(systemName: session.status.sfSymbol)
+                                .font(.system(size: 11))
+                                .foregroundColor(session.status.sfSymbolColor)
+                                .frame(width: 14)
 
-                    if let branch = session.worktreeBranch {
-                        Text(branch)
-                            .font(.system(size: 10, weight: .regular))
-                            .foregroundColor(.white.opacity(0.4))
-                            .lineLimit(1)
-                    }
+                            Text(session.displayName)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
 
-                    Spacer()
-
-                    // RIGHT group: lines changed + context bar + cost
-
-                    // Lines changed
-                    if (session.linesAdded ?? 0) != 0 || (session.linesRemoved ?? 0) != 0 {
-                        HStack(spacing: 3) {
-                            if let added = session.linesAdded, added != 0 {
-                                Text("+\(formatLines(added))")
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundColor(Color.green.opacity(0.8))
+                            if let branch = session.worktreeBranch {
+                                Text(branch)
+                                    .font(.system(size: 10, weight: .regular))
+                                    .foregroundColor(.white.opacity(0.4))
+                                    .lineLimit(1)
                             }
-                            if let removed = session.linesRemoved, removed != 0 {
-                                Text("-\(formatLines(removed))")
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundColor(Color.red.opacity(0.8))
+
+                            Spacer()
+
+                            // Duration since current status
+                            if let since = session.statusSince {
+                                Text(Self.formatDuration(Date().timeIntervalSince(since)))
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.35))
+                            }
+
+                            // Lines changed
+                            if (session.linesAdded ?? 0) != 0 || (session.linesRemoved ?? 0) != 0 {
+                                HStack(spacing: 3) {
+                                    if let added = session.linesAdded, added != 0 {
+                                        Text("+\(formatLines(added))")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundColor(Color.green.opacity(0.8))
+                                    }
+                                    if let removed = session.linesRemoved, removed != 0 {
+                                        Text("-\(formatLines(removed))")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundColor(Color.red.opacity(0.8))
+                                    }
+                                }
+                            }
+
+                            // Context progress bar + percentage
+                            if let ctx = session.contextUsedPercentage {
+                                HStack(spacing: 4) {
+                                    ZStack(alignment: .leading) {
+                                        RoundedRectangle(cornerRadius: 2)
+                                            .fill(Color(white: 0.2))
+                                            .frame(width: 40, height: 4)
+                                        RoundedRectangle(cornerRadius: 2)
+                                            .fill(contextBarColor(ctx))
+                                            .frame(width: 40 * min(ctx / 100.0, 1.0), height: 4)
+                                    }
+                                    Text("\(Int(ctx))%")
+                                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                        .foregroundColor(.white.opacity(0.5))
+                                }
+                            }
+
+                            // Cost
+                            if let cost = session.costUSD {
+                                Text(String(format: "$%.2f", cost))
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.6))
                             }
                         }
-                    }
-
-                    // Context progress bar + percentage
-                    if let ctx = session.contextUsedPercentage {
-                        HStack(spacing: 4) {
-                            ZStack(alignment: .leading) {
-                                RoundedRectangle(cornerRadius: 2)
-                                    .fill(Color(white: 0.2))
-                                    .frame(width: 40, height: 4)
-                                RoundedRectangle(cornerRadius: 2)
-                                    .fill(contextBarColor(ctx))
-                                    .frame(width: 40 * min(ctx / 100.0, 1.0), height: 4)
-                            }
-                            Text("\(Int(ctx))%")
-                                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                .foregroundColor(.white.opacity(0.5))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            onTap?(session)
                         }
-                    }
-
-                    // Cost
-                    if let cost = session.costUSD {
-                        Text(String(format: "$%.2f", cost))
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.6))
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    onTap?(session)
-                }
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.white.opacity(0.001))
-                )
-                .onHover { hovering in
-                    if hovering {
-                        NSCursor.pointingHand.push()
-                    } else {
-                        NSCursor.pop()
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color.white.opacity(0.001))
+                        )
+                        .onHover { hovering in
+                            if hovering {
+                                NSCursor.pointingHand.push()
+                            } else {
+                                NSCursor.pop()
+                            }
+                        }
                     }
                 }
             }
@@ -551,6 +605,12 @@ struct NotchHoverView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.black)
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 12, bottomTrailingRadius: 12, topTrailingRadius: 0))
+    }
+
+    static func formatDuration(_ seconds: TimeInterval) -> String {
+        let s = Int(seconds)
+        if s < 60 { return "\(s)s" }
+        return "\(s / 60)m \(s % 60)s"
     }
 }
 
@@ -617,8 +677,23 @@ struct NotchPillContent: View {
     private var sessions: [ClaudeSession] { ClaudeMonitor.shared.sessions }
     private var monitor: ClaudeMonitor { ClaudeMonitor.shared }
 
+    private var duckyMood: DuckyMood {
+        switch displayState {
+        case .working: return .working
+        case .taskCompleted: return .celebrating
+        case .waitingForInput: return .alert
+        case .idle:
+            return sessions.isEmpty ? .sleeping : .chillin
+        }
+    }
+
     var body: some View {
         HStack(spacing: 0) {
+            // Duck avatar
+            DuckyAvatar(mood: duckyMood, size: 28)
+                .offset(y: -1)
+                .padding(.leading, 6)
+
             // SECTION 1 (LEFT): Session status
             sessionSection
                 .frame(width: Self.sectionLeftWidth, height: 20)
@@ -631,6 +706,7 @@ struct NotchPillContent: View {
             Color.clear
                 .frame(width: Self.sectionRightWidth, height: 20)
         }
+        .animation(.easeInOut(duration: 0.25), value: displayState)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .offset(y: -2)
     }
@@ -735,15 +811,17 @@ struct PillSectionDivider: View {
     }
 }
 
+// MARK: - Spinner
+
 struct SpinnerView: View {
     @State private var isAnimating = false
 
     var body: some View {
-        Circle()
-            .trim(from: 0.05, to: 0.8)
-            .stroke(Color.white, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+        Image(systemName: "arrow.trianglehead.2.counterclockwise")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundColor(.yellow)
             .rotationEffect(.degrees(isAnimating ? 360 : 0))
-            .animation(.linear(duration: 0.8).repeatForever(autoreverses: false), value: isAnimating)
+            .animation(.linear(duration: 1.0).repeatForever(autoreverses: false), value: isAnimating)
             .onAppear { isAnimating = true }
     }
 }
