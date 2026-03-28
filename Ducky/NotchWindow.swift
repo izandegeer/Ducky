@@ -470,6 +470,15 @@ class NotchHoverWindow: NSPanel {
         }
         height += 4 // bottom padding
 
+        // Add height for status section if there are issues
+        let statusMonitor = ClaudeStatusMonitor.shared
+        if statusMonitor.hasIssues {
+            height += 8 // vertical padding
+            height += 1 // divider
+            height += 20 // status line
+            height += CGFloat(statusMonitor.activeIncidents.count) * 20 // incident lines
+        }
+
         setFrame(NSRect(x: x, y: notchFrame.minY, width: width, height: 0), display: true)
         alphaValue = 1
         orderFrontRegardless()
@@ -551,6 +560,9 @@ struct NotchHoverView: View {
                     }
                 }
             }
+
+            // System status section (only when there are issues)
+            StatusSectionView()
         }
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -754,8 +766,8 @@ struct NotchPillContent: View {
             rateLimitSection
                 .frame(width: Self.sectionCenterWidth, height: 20)
 
-            // SECTION 3 (RIGHT): Reserved
-            Color.clear
+            // SECTION 3 (RIGHT): System status indicator
+            statusIndicator
                 .frame(width: Self.sectionRightWidth, height: 20)
         }
         .animation(.easeInOut(duration: 0.25), value: displayState)
@@ -815,6 +827,29 @@ struct NotchPillContent: View {
         }
     }
 
+    // MARK: - Status indicator
+
+    @ViewBuilder
+    private var statusIndicator: some View {
+        let statusMonitor = ClaudeStatusMonitor.shared
+        switch statusMonitor.overallStatus {
+        case .degradedPerformance:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+                .foregroundColor(.yellow)
+        case .partialOutage:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+                .foregroundColor(.orange)
+        case .majorOutage:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+                .foregroundColor(.red)
+        case .operational, .unknown:
+            EmptyView()
+        }
+    }
+
     // MARK: - Rate limit section
 
     @ViewBuilder
@@ -836,6 +871,47 @@ struct NotchPillContent: View {
 }
 
 // MARK: - Pill sub-components
+
+struct StatusSectionView: View {
+    private var statusMonitor: ClaudeStatusMonitor { ClaudeStatusMonitor.shared }
+
+    var body: some View {
+        if statusMonitor.hasIssues {
+            VStack(alignment: .leading, spacing: 4) {
+                // Divider
+                Rectangle()
+                    .fill(Color.white.opacity(0.15))
+                    .frame(height: 0.5)
+                    .padding(.horizontal, 10)
+
+                // Claude Code status line
+                HStack(spacing: 6) {
+                    Image(systemName: "circle.fill")
+                        .font(.system(size: 7))
+                        .foregroundColor(statusMonitor.claudeCodeStatusColor)
+                    Text("Claude Code: \(statusMonitor.claudeCodeDisplayLabel)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.8))
+                }
+                .padding(.horizontal, 12)
+
+                // Active incidents
+                ForEach(Array(statusMonitor.activeIncidents.enumerated()), id: \.offset) { _, incident in
+                    HStack(spacing: 6) {
+                        Text("\u{26A0}")
+                            .font(.system(size: 10))
+                        Text(incident.name)
+                            .font(.system(size: 10))
+                            .foregroundColor(.white.opacity(0.5))
+                            .lineLimit(2)
+                    }
+                    .padding(.horizontal, 12)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+}
 
 struct PillRateLimitIndicator: View {
     let label: String

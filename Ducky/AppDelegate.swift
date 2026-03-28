@@ -6,6 +6,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var notchWindow: NotchWindow?
     private let settings = DuckySettings.shared
     private let claudeMonitor = ClaudeMonitor.shared
+    private let claudeStatusMonitor = ClaudeStatusMonitor.shared
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         DuckyInstaller.installIfNeeded()
