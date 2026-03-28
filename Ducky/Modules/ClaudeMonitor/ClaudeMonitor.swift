@@ -77,7 +77,7 @@ class ClaudeMonitor {
         for session in sessions {
             let oldStatus = oldStatuses[session.id]
             if let old = oldStatus {
-                if old == .working && session.status == .taskCompleted {
+                if old == .working && (session.status == .taskCompleted || session.status == .idle) {
                     onTaskCompleted(session: session)
                 } else if old == .working && session.status == .waitingForInput {
                     onWaitingForInput(session: session)

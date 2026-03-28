@@ -90,6 +90,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         soundItem.state = settings.soundEnabled ? .on : .off
         menu.addItem(soundItem)
 
+        let testItem = NSMenuItem(
+            title: "Test Notification",
+            action: #selector(testNotification),
+            keyEquivalent: ""
+        )
+        testItem.target = self
+        menu.addItem(testItem)
+
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(
@@ -116,5 +124,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleSound() {
         settings.soundEnabled.toggle()
+    }
+
+    @objc private func testNotification() {
+        NotificationCenter.default.post(
+            name: .DuckySessionEvent,
+            object: nil,
+            userInfo: [
+                "name": "test",
+                "emoji": "✅",
+                "message": ""
+            ]
+        )
     }
 }

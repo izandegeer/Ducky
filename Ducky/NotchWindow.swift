@@ -300,18 +300,22 @@ class NotchToastWindow: NSPanel {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         isFloatingPanel = true
         level = .statusBar
-        backgroundColor = .clear
-        hasShadow = true
-        isOpaque = false
+        backgroundColor = .black
+        hasShadow = false
+        isOpaque = true
         hidesOnDeactivate = false
         ignoresMouseEvents = false
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        backgroundColor = .clear
+        isOpaque = false
+        hasShadow = false
+        contentView?.wantsLayer = true
     }
 
     override func mouseDown(with event: NSEvent) {
         if let session = sessionToFocus {
             ClaudeMonitor.focusSession(session)
-            animateOut()
+            animateOut(notchMinY: nil)
         }
     }
 
@@ -320,7 +324,6 @@ class NotchToastWindow: NSPanel {
     func show(name: String, emoji: String, message: String, below notchFrame: NSRect) {
         hideTimer?.invalidate()
 
-        // Find the session that matches this name for click-to-focus
         sessionToFocus = ClaudeMonitor.shared.sessions.first { $0.displayName == name }
 
         let view = NotchToastView(name: name, emoji: emoji, message: message)
@@ -331,34 +334,36 @@ class NotchToastWindow: NSPanel {
             hostView?.rootView = view
         }
 
-        let width: CGFloat = 280
-        let height: CGFloat = message.isEmpty ? 36 : 52
-        let x = notchFrame.midX - width / 2
-        let y = notchFrame.minY - height - 4
+        // Same width as the expanded notch, anchored to its bottom
+        let width: CGFloat = notchFrame.width
+        let contentHeight: CGFloat = message.isEmpty ? 32 : 48
+        let x = notchFrame.origin.x
 
-        // Start above (hidden behind notch), animate down
-        setFrame(NSRect(x: x, y: notchFrame.minY, width: width, height: height), display: true)
-        alphaValue = 0
+        // Start at 0 height (hidden), grow downward from notch bottom
+        let startY = notchFrame.minY
+        setFrame(NSRect(x: x, y: startY, width: width, height: 0), display: true)
+        alphaValue = 1
         orderFrontRegardless()
 
+        let targetY = notchFrame.minY - contentHeight
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.3
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            self.animator().setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
-            self.animator().alphaValue = 1
+            self.animator().setFrame(NSRect(x: x, y: targetY, width: width, height: contentHeight), display: true)
         }
 
-        // Auto-hide after 3 seconds
         hideTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
-            self?.animateOut()
+            self?.animateOut(notchMinY: notchFrame.minY)
         }
     }
 
-    func animateOut() {
+    func animateOut(notchMinY: CGFloat? = nil) {
         hideTimer?.invalidate()
+        let collapseY = notchMinY ?? frame.maxY
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.25
-            self.animator().alphaValue = 0
+            ctx.duration = 0.2
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            self.animator().setFrame(NSRect(x: self.frame.origin.x, y: collapseY, width: self.frame.width, height: 0), display: true)
         }, completionHandler: {
             self.orderOut(nil)
         })
@@ -374,30 +379,28 @@ struct NotchToastView: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text(emoji)
-                    .font(.system(size: 14))
+                    .font(.system(size: 13))
                 Text(name)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.white)
                 if message.isEmpty {
                     Text("— done")
-                        .font(.system(size: 12))
+                        .font(.system(size: 11))
                         .foregroundColor(.white.opacity(0.6))
                 }
             }
             if !message.isEmpty {
                 Text(message)
-                    .font(.system(size: 11))
+                    .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.7))
                     .lineLimit(2)
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color(nsColor: NSColor(white: 0.12, alpha: 0.95)))
-        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .background(Color.black)
+        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 12, bottomTrailingRadius: 12, topTrailingRadius: 0))
     }
 }
 
@@ -411,11 +414,12 @@ class NotchHoverWindow: NSPanel {
         isFloatingPanel = true
         level = .statusBar
         backgroundColor = .clear
-        hasShadow = true
+        hasShadow = false
         isOpaque = false
         hidesOnDeactivate = false
         ignoresMouseEvents = false
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        contentView?.wantsLayer = true
     }
 
     func updateSessions(_ sessions: [ClaudeSession]) {
@@ -431,29 +435,30 @@ class NotchHoverWindow: NSPanel {
     }
 
     func showBelow(notchFrame: NSRect) {
-        let width: CGFloat = 260
+        let width = notchFrame.width
         let sessions = ClaudeMonitor.shared.sessions
         let rowHeight: CGFloat = 28
-        let height: CGFloat = CGFloat(sessions.count) * rowHeight + 20
-        let x = notchFrame.midX - width / 2
-        let y = notchFrame.minY - height - 4
+        let height: CGFloat = CGFloat(sessions.count) * rowHeight + 16
+        let x = notchFrame.origin.x
 
-        setFrame(NSRect(x: x, y: notchFrame.minY, width: width, height: height), display: true)
-        alphaValue = 0
+        setFrame(NSRect(x: x, y: notchFrame.minY, width: width, height: 0), display: true)
+        alphaValue = 1
         orderFrontRegardless()
 
+        let targetY = notchFrame.minY - height
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.2
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            self.animator().setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
-            self.animator().alphaValue = 1
+            self.animator().setFrame(NSRect(x: x, y: targetY, width: width, height: height), display: true)
         }
     }
 
     func animateOut() {
+        let collapseY = frame.maxY
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.15
-            self.animator().alphaValue = 0
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            self.animator().setFrame(NSRect(x: self.frame.origin.x, y: collapseY, width: self.frame.width, height: 0), display: true)
         }, completionHandler: {
             self.orderOut(nil)
         })
@@ -501,11 +506,9 @@ struct NotchHoverView: View {
             }
         }
         .padding(.vertical, 8)
-        .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color(nsColor: NSColor(white: 0.12, alpha: 0.95)))
-        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
+        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 12, bottomTrailingRadius: 12, topTrailingRadius: 0))
     }
 }
 
