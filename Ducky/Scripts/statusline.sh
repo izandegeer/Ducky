@@ -26,11 +26,24 @@ if [ -n "$SESSION_ID" ]; then
 
     TIMESTAMP=$(date +%s)
 
+    # Detect git branch from project dir or cwd
+    GIT_BRANCH=""
+    GIT_DIRTY="false"
+    CWD=$(echo "$INPUT" | jq -r '.workspace.project_dir // .cwd // ""' 2>/dev/null)
+    if [ -n "$CWD" ] && [ -d "$CWD" ]; then
+        GIT_BRANCH=$(git -C "$CWD" branch --show-current 2>/dev/null || echo "")
+        if [ -n "$(git -C "$CWD" status --porcelain 2>/dev/null | head -1)" ]; then
+            GIT_DIRTY="true"
+        fi
+    fi
+
     # Build the output JSON, handling missing/null fields gracefully
     OUTPUT=$(jq -n \
         --arg sid "$SESSION_ID" \
         --argjson ts "$TIMESTAMP" \
         --argjson input "$INPUT" \
+        --arg git_branch "$GIT_BRANCH" \
+        --argjson git_dirty "$GIT_DIRTY" \
         '{
             session_id: $sid,
             timestamp: $ts,
@@ -63,6 +76,14 @@ if [ -n "$SESSION_ID" ]; then
                         name: ($input.worktree.name // null),
                         branch: ($input.worktree.branch // null),
                         original_branch: ($input.worktree.original_branch // null)
+                    }
+                else null end
+            ),
+            git: (
+                if ($git_branch | length) > 0 then
+                    {
+                        branch: $git_branch,
+                        dirty: $git_dirty
                     }
                 else null end
             )

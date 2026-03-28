@@ -118,12 +118,40 @@ class NotchWindow: NSPanel {
             hoverWindow = NotchHoverWindow()
         }
         hoverWindow?.updateSessions(sessions)
+
+        // Calculate the hover preview width (same logic as NotchHoverWindow.showBelow)
+        let hoverWidth = max(Self.pillFixedWidth, 520)
+
+        // Animate the pill to match the hover width if the preview is wider
+        if hoverWidth > Self.pillFixedWidth {
+            animatePillWidth(to: hoverWidth)
+        }
+
         hoverWindow?.showBelow(notchFrame: frame)
     }
 
     private func hideHoverPreview() {
         hoverWindow?.animateOut()
         // Don't nil it — reuse
+
+        // Animate the pill back to its original width
+        animatePillWidth(to: Self.pillFixedWidth)
+    }
+
+    private func animatePillWidth(to targetWidth: CGFloat) {
+        guard let screen = NSScreen.builtIn else { return }
+        let screenFrame = screen.frame
+        let targetFrame = NSRect(
+            x: screenFrame.midX - targetWidth / 2,
+            y: screenFrame.maxY - notchHeight,
+            width: targetWidth,
+            height: notchHeight
+        )
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.25
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            self.animator().setFrame(targetFrame, display: true)
+        }
     }
 
     // MARK: - Toast notifications
@@ -429,6 +457,7 @@ class NotchHoverWindow: NSPanel {
 
     func showBelow(notchFrame: NSRect) {
         let sessions = ClaudeMonitor.shared.sessions
+        // Use the notch frame width directly — the pill already expanded to match
         let width: CGFloat = max(notchFrame.width, 520)
         let x = notchFrame.midX - width / 2
 
@@ -512,91 +541,13 @@ struct NotchHoverView: View {
             if !sessions.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(sessions) { session in
-                        HStack(spacing: 6) {
-                            // LEFT group: icon + name + branch
-                            Image(systemName: session.status.sfSymbol)
-                                .font(.system(size: 11))
-                                .foregroundColor(session.status.sfSymbolColor)
-                                .frame(width: 14)
-
-                            Text(session.displayName)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-
-                            if let branch = session.worktreeBranch {
-                                Text(branch)
-                                    .font(.system(size: 10, weight: .regular))
-                                    .foregroundColor(.white.opacity(0.4))
-                                    .lineLimit(1)
-                            }
-
-                            Spacer()
-
-                            // Duration since current status
-                            if let since = session.statusSince {
-                                Text(Self.formatDuration(Date().timeIntervalSince(since)))
-                                    .font(.system(size: 9, design: .monospaced))
-                                    .foregroundColor(.white.opacity(0.35))
-                            }
-
-                            // Lines changed
-                            if (session.linesAdded ?? 0) != 0 || (session.linesRemoved ?? 0) != 0 {
-                                HStack(spacing: 3) {
-                                    if let added = session.linesAdded, added != 0 {
-                                        Text("+\(formatLines(added))")
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .foregroundColor(Color.green.opacity(0.8))
-                                    }
-                                    if let removed = session.linesRemoved, removed != 0 {
-                                        Text("-\(formatLines(removed))")
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .foregroundColor(Color.red.opacity(0.8))
-                                    }
-                                }
-                            }
-
-                            // Context progress bar + percentage
-                            if let ctx = session.contextUsedPercentage {
-                                HStack(spacing: 4) {
-                                    ZStack(alignment: .leading) {
-                                        RoundedRectangle(cornerRadius: 2)
-                                            .fill(Color(white: 0.2))
-                                            .frame(width: 40, height: 4)
-                                        RoundedRectangle(cornerRadius: 2)
-                                            .fill(contextBarColor(ctx))
-                                            .frame(width: 40 * min(ctx / 100.0, 1.0), height: 4)
-                                    }
-                                    Text("\(Int(ctx))%")
-                                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                        .foregroundColor(.white.opacity(0.5))
-                                }
-                            }
-
-                            // Cost
-                            if let cost = session.costUSD {
-                                Text(String(format: "$%.2f", cost))
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                    .foregroundColor(.white.opacity(0.6))
-                            }
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            onTap?(session)
-                        }
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(Color.white.opacity(0.001))
+                        SessionRowView(
+                            session: session,
+                            formatLines: formatLines,
+                            contextBarColor: contextBarColor,
+                            formatDuration: Self.formatDuration,
+                            onTap: onTap
                         )
-                        .onHover { hovering in
-                            if hovering {
-                                NSCursor.pointingHand.push()
-                            } else {
-                                NSCursor.pop()
-                            }
-                        }
                     }
                 }
             }
@@ -611,6 +562,107 @@ struct NotchHoverView: View {
         let s = Int(seconds)
         if s < 60 { return "\(s)s" }
         return "\(s / 60)m \(s % 60)s"
+    }
+}
+
+struct SessionRowView: View {
+    let session: ClaudeSession
+    let formatLines: (Int) -> String
+    let contextBarColor: (Double) -> Color
+    let formatDuration: (TimeInterval) -> String
+    var onTap: ((ClaudeSession) -> Void)?
+
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // LEFT group: icon + name + branch
+            Image(systemName: session.status.sfSymbol)
+                .font(.system(size: 11))
+                .foregroundColor(session.status.sfSymbolColor)
+                .frame(width: 14)
+
+            Text(session.displayName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+
+            // Duration since current status
+            if let since = session.statusSince {
+                Text(formatDuration(Date().timeIntervalSince(since)))
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.3))
+            }
+
+            if let branch = session.gitBranch ?? session.worktreeBranch {
+                let dirtyMarker = (session.gitDirty == true) ? "*" : ""
+                Text(branch + dirtyMarker)
+                    .font(.system(size: 10, weight: .regular))
+                    .foregroundColor(.white.opacity(0.4))
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            // Lines changed
+            if (session.linesAdded ?? 0) != 0 || (session.linesRemoved ?? 0) != 0 {
+                HStack(spacing: 3) {
+                    if let added = session.linesAdded, added != 0 {
+                        Text("+\(formatLines(added))")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(Color.green.opacity(0.8))
+                    }
+                    if let removed = session.linesRemoved, removed != 0 {
+                        Text("-\(formatLines(removed))")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(Color.red.opacity(0.8))
+                    }
+                }
+            }
+
+            // Context progress bar + percentage
+            if let ctx = session.contextUsedPercentage {
+                HStack(spacing: 4) {
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color(white: 0.2))
+                            .frame(width: 40, height: 4)
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(contextBarColor(ctx))
+                            .frame(width: 40 * min(ctx / 100.0, 1.0), height: 4)
+                    }
+                    Text("\(Int(ctx))%")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+            }
+
+            // Cost
+            if let cost = session.costUSD {
+                Text(String(format: "$%.2f", cost))
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.6))
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onTap?(session)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.white.opacity(isHovered ? 0.1 : 0.001))
+        )
+        .animation(.easeInOut(duration: 0.15), value: isHovered)
+        .onHover { hovering in
+            isHovered = hovering
+            if hovering {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
     }
 }
 

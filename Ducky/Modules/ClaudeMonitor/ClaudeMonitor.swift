@@ -72,6 +72,8 @@ struct ClaudeSession: Identifiable {
     var worktreeName: String?
     var worktreeBranch: String?
     var worktreeOriginalBranch: String?
+    var gitBranch: String?
+    var gitDirty: Bool?
 }
 
 @Observable
@@ -318,6 +320,8 @@ class ClaudeMonitor {
             var worktreeName: String?
             var worktreeBranch: String?
             var worktreeOriginalBranch: String?
+            var gitBranch: String?
+            var gitDirty: Bool?
         }
         var statuslineStates: [String: StatuslineData] = [:]
         if let statuslineFiles = try? fm.contentsOfDirectory(atPath: duckyStatuslineDir) {
@@ -362,6 +366,11 @@ class ClaudeMonitor {
                     sl.worktreeName = wt["name"] as? String
                     sl.worktreeBranch = wt["branch"] as? String
                     sl.worktreeOriginalBranch = wt["original_branch"] as? String
+                }
+
+                if let git = json["git"] as? [String: Any] {
+                    sl.gitBranch = git["branch"] as? String
+                    sl.gitDirty = git["dirty"] as? Bool
                 }
 
                 statuslineStates[sid] = sl
@@ -438,7 +447,9 @@ class ClaudeMonitor {
                 contextWindowSize: sl?.contextWindowSize,
                 worktreeName: sl?.worktreeName,
                 worktreeBranch: sl?.worktreeBranch,
-                worktreeOriginalBranch: sl?.worktreeOriginalBranch
+                worktreeOriginalBranch: sl?.worktreeOriginalBranch,
+                gitBranch: sl?.gitBranch,
+                gitDirty: sl?.gitDirty
             ))
         }
 
