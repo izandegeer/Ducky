@@ -266,9 +266,10 @@ class ClaudeMonitor {
     /// Activate iTerm and switch to the tab containing this session's TTY
     static func focusSession(_ session: ClaudeSession) {
         guard let tty = session.tty else { return }
+
+        // Select the correct tab AND bring its window to front
         let script = """
         tell application "iTerm2"
-            activate
             repeat with w in windows
                 tell w
                     repeat with t in tabs
@@ -276,13 +277,15 @@ class ClaudeMonitor {
                             repeat with s in sessions
                                 if (tty of s) contains "\(tty)" then
                                     select t
-                                    return
+                                    -- Bring this specific window to front
+                                    set index of w to 1
                                 end if
                             end repeat
                         end tell
                     end repeat
                 end tell
             end repeat
+            activate
         end tell
         """
         DispatchQueue.global(qos: .userInitiated).async {
