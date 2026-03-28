@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import SwiftUI
 
 enum ClaudeSessionStatus: Equatable {
     case idle
@@ -24,6 +25,24 @@ enum ClaudeSessionStatus: Equatable {
         case .idle: return "idle"
         }
     }
+
+    var sfSymbol: String {
+        switch self {
+        case .working: return "bolt.fill"
+        case .idle: return "moon.zzz.fill"
+        case .taskCompleted: return "checkmark.circle.fill"
+        case .waitingForInput: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    var sfSymbolColor: Color {
+        switch self {
+        case .working: return .yellow
+        case .idle: return Color(white: 0.5)
+        case .taskCompleted: return .green
+        case .waitingForInput: return .orange
+        }
+    }
 }
 
 struct ClaudeSession: Identifiable {
@@ -37,6 +56,20 @@ struct ClaudeSession: Identifiable {
     var hookMessage: String?
     var hookStatus: String?
     var tty: String?
+
+    // Status line data
+    var rateLimitFiveHour: Double? // percentage 0-100
+    var rateLimitFiveHourResetsAt: Date?
+    var rateLimitSevenDay: Double? // percentage 0-100
+    var rateLimitSevenDayResetsAt: Date?
+    var costUSD: Double?
+    var linesAdded: Int?
+    var linesRemoved: Int?
+    var contextUsedPercentage: Double?
+    var contextWindowSize: Int?
+    var worktreeName: String?
+    var worktreeBranch: String?
+    var worktreeOriginalBranch: String?
 }
 
 @Observable
@@ -44,6 +77,25 @@ class ClaudeMonitor {
     static let shared = ClaudeMonitor()
 
     var sessions: [ClaudeSession] = []
+
+    // Aggregate rate limits (worst case across all sessions, since limits are account-level)
+    var rateLimitFiveHour: Double? {
+        sessions.compactMap(\.rateLimitFiveHour).max()
+    }
+
+    var rateLimitSevenDay: Double? {
+        sessions.compactMap(\.rateLimitSevenDay).max()
+    }
+
+    var rateLimitFiveHourResetsAt: Date? {
+        guard let max = rateLimitFiveHour else { return nil }
+        return sessions.first(where: { $0.rateLimitFiveHour == max })?.rateLimitFiveHourResetsAt
+    }
+
+    var rateLimitSevenDayResetsAt: Date? {
+        guard let max = rateLimitSevenDay else { return nil }
+        return sessions.first(where: { $0.rateLimitSevenDay == max })?.rateLimitSevenDayResetsAt
+    }
 
     private var pollingTimer: Timer?
     private var audioPlayer: AVAudioPlayer?
@@ -78,6 +130,23 @@ class ClaudeMonitor {
 
     private func updateSessions(_ detected: [ClaudeSession]) {
         let oldStatuses = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.status) })
+
+        // Clean up statusline files for sessions that have ended
+        let oldSessionIds = Set(sessions.map(\.sessionId))
+        let newSessionIds = Set(detected.map(\.sessionId))
+        let endedSessionIds = oldSessionIds.subtracting(newSessionIds)
+        if !endedSessionIds.isEmpty {
+            DispatchQueue.global(qos: .utility).async {
+                let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+                let statuslineDir = home + "/.ducky/statusline"
+                let fm = FileManager.default
+                for sid in endedSessionIds {
+                    let path = statuslineDir + "/" + sid + ".json"
+                    try? fm.removeItem(atPath: path)
+                }
+            }
+        }
+
         sessions = detected
 
         for session in sessions {
@@ -186,7 +255,13 @@ class ClaudeMonitor {
         let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
         let claudeSessionsDir = home + "/.claude/sessions"
         let duckySessionsDir = home + "/.ducky/sessions"
+        let duckyStatuslineDir = home + "/.ducky/statusline"
         let fm = FileManager.default
+
+        // Ensure statusline directory exists
+        if !fm.fileExists(atPath: duckyStatuslineDir) {
+            try? fm.createDirectory(atPath: duckyStatuslineDir, withIntermediateDirectories: true)
+        }
 
         guard let files = try? fm.contentsOfDirectory(atPath: claudeSessionsDir) else { return [] }
 
@@ -205,6 +280,70 @@ class ClaudeMonitor {
                 let age = Int(Date().timeIntervalSince1970) - ts
                 guard age < 10 else { continue }
                 hookStates[sid] = (status, message, ts)
+            }
+        }
+
+        // Read all ducky statusline data indexed by session_id
+        struct StatuslineData {
+            var rateLimitFiveHour: Double?
+            var rateLimitFiveHourResetsAt: Date?
+            var rateLimitSevenDay: Double?
+            var rateLimitSevenDayResetsAt: Date?
+            var costUSD: Double?
+            var linesAdded: Int?
+            var linesRemoved: Int?
+            var contextUsedPercentage: Double?
+            var contextWindowSize: Int?
+            var worktreeName: String?
+            var worktreeBranch: String?
+            var worktreeOriginalBranch: String?
+        }
+        var statuslineStates: [String: StatuslineData] = [:]
+        if let statuslineFiles = try? fm.contentsOfDirectory(atPath: duckyStatuslineDir) {
+            for file in statuslineFiles where file.hasSuffix(".json") {
+                let path = duckyStatuslineDir + "/" + file
+                guard let data = fm.contents(atPath: path),
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let sid = json["session_id"] as? String else { continue }
+                // Statusline data (rate limits, cost, context, worktree) doesn't go stale quickly.
+                // It's only updated after each assistant message, so we read it regardless of age.
+                // Cleanup happens when the session itself ends (see updateSessions).
+
+                var sl = StatuslineData()
+
+                if let rateLimits = json["rate_limits"] as? [String: Any] {
+                    if let fiveHour = rateLimits["five_hour"] as? [String: Any] {
+                        sl.rateLimitFiveHour = fiveHour["used_percentage"] as? Double
+                        if let resetsAt = fiveHour["resets_at"] as? Double {
+                            sl.rateLimitFiveHourResetsAt = Date(timeIntervalSince1970: resetsAt)
+                        }
+                    }
+                    if let sevenDay = rateLimits["seven_day"] as? [String: Any] {
+                        sl.rateLimitSevenDay = sevenDay["used_percentage"] as? Double
+                        if let resetsAt = sevenDay["resets_at"] as? Double {
+                            sl.rateLimitSevenDayResetsAt = Date(timeIntervalSince1970: resetsAt)
+                        }
+                    }
+                }
+
+                if let cost = json["cost"] as? [String: Any] {
+                    sl.costUSD = cost["total_cost_usd"] as? Double
+                    sl.linesAdded = cost["total_lines_added"] as? Int
+                    sl.linesRemoved = cost["total_lines_removed"] as? Int
+                }
+
+                if let ctx = json["context_window"] as? [String: Any] {
+                    sl.contextUsedPercentage = ctx["used_percentage"] as? Double
+                    sl.contextWindowSize = ctx["context_window_size"] as? Int
+                }
+
+                if let wt = json["worktree"] as? [String: Any] {
+                    sl.worktreeName = wt["name"] as? String
+                    sl.worktreeBranch = wt["branch"] as? String
+                    sl.worktreeOriginalBranch = wt["original_branch"] as? String
+                }
+
+                statuslineStates[sid] = sl
             }
         }
 
@@ -260,6 +399,7 @@ class ClaudeMonitor {
                 hookStatusRaw = nil
             }
 
+            let sl = statuslineStates[sessionId]
             results.append(ClaudeSession(
                 id: pid,
                 sessionId: sessionId,
@@ -270,7 +410,19 @@ class ClaudeMonitor {
                 cpuUsage: cpuUsage,
                 hookMessage: hookMessage,
                 hookStatus: hookStatusRaw,
-                tty: tty
+                tty: tty,
+                rateLimitFiveHour: sl?.rateLimitFiveHour,
+                rateLimitFiveHourResetsAt: sl?.rateLimitFiveHourResetsAt,
+                rateLimitSevenDay: sl?.rateLimitSevenDay,
+                rateLimitSevenDayResetsAt: sl?.rateLimitSevenDayResetsAt,
+                costUSD: sl?.costUSD,
+                linesAdded: sl?.linesAdded,
+                linesRemoved: sl?.linesRemoved,
+                contextUsedPercentage: sl?.contextUsedPercentage,
+                contextWindowSize: sl?.contextWindowSize,
+                worktreeName: sl?.worktreeName,
+                worktreeBranch: sl?.worktreeBranch,
+                worktreeOriginalBranch: sl?.worktreeOriginalBranch
             ))
         }
 

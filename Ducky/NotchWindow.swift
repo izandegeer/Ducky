@@ -110,7 +110,8 @@ class NotchWindow: NSPanel {
     // MARK: - Hover preview
 
     private func showHoverPreview() {
-        let sessions = ClaudeMonitor.shared.sessions
+        let monitor = ClaudeMonitor.shared
+        let sessions = monitor.sessions
         guard !sessions.isEmpty else { return }
 
         if hoverWindow == nil {
@@ -150,113 +151,76 @@ class NotchWindow: NSPanel {
 
     // MARK: - Status observation
 
+    private static let pillFixedWidth: CGFloat = 380
+
     private func observeStatusChanges() {
         statusObserver = NotificationCenter.default.addObserver(
             forName: .DuckyStatusChanged,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.updateExpansionState()
+            self?.updateVisibility()
         }
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            self?.updateExpansionState()
+            self?.updateVisibility()
             self?.pillContentHost?.rootView = NotchPillContent()
         }
     }
 
-    private func updateExpansionState() {
-        let shouldExpand = NotchDisplayState.current != .idle
+    private func updateVisibility() {
+        let hasRateLimits = ClaudeMonitor.shared.rateLimitFiveHour != nil || ClaudeMonitor.shared.rateLimitSevenDay != nil
+        let hasSessions = !ClaudeMonitor.shared.sessions.isEmpty
+        let shouldShow = hasSessions || hasRateLimits
 
-        if shouldExpand && !isExpanded {
+        if shouldShow && !isExpanded {
             collapseDebounceTimer?.invalidate()
             collapseDebounceTimer = nil
-            expandWithBounce()
-        } else if !shouldExpand && isExpanded {
+            showPill()
+        } else if !shouldShow && isExpanded {
             guard collapseDebounceTimer == nil else { return }
             collapseDebounceTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
                 guard let self else { return }
                 self.collapseDebounceTimer = nil
-                if NotchDisplayState.current == .idle && self.isExpanded {
-                    self.collapse()
+                let stillHasData = !ClaudeMonitor.shared.sessions.isEmpty
+                    || ClaudeMonitor.shared.rateLimitFiveHour != nil
+                    || ClaudeMonitor.shared.rateLimitSevenDay != nil
+                if !stillHasData && self.isExpanded {
+                    self.hidePill()
                 }
             }
         }
     }
 
-    // MARK: - Expand / Collapse
+    // MARK: - Show / Hide (fixed width, fade only)
 
-    private func expandWithBounce() {
+    private func showPill() {
         isExpanded = true
         guard let screen = NSScreen.builtIn else { return }
         let screenFrame = screen.frame
-
-        let targetWidth: CGFloat = notchWidth + 80
+        let pillWidth = Self.pillFixedWidth
         let targetFrame = NSRect(
-            x: screenFrame.midX - targetWidth / 2,
+            x: screenFrame.midX - pillWidth / 2,
             y: screenFrame.maxY - notchHeight,
-            width: targetWidth,
+            width: pillWidth,
             height: notchHeight
         )
-
-        pillView.alphaValue = 1
-        pillContentHost?.alphaValue = 1
-
-        let startFrame = frame
-        let startTime = CACurrentMediaTime()
-        let duration: Double = 0.6
-
-        let displayLink = CVDisplayLinkWrapper { [weak self] in
-            guard let self else { return false }
-            let elapsed = CACurrentMediaTime() - startTime
-            let t = min(elapsed / duration, 1.0)
-            let bounce = Self.bounceEase(t)
-            let currentX = startFrame.origin.x + (targetFrame.origin.x - startFrame.origin.x) * bounce
-            let currentWidth = startFrame.width + (targetFrame.width - startFrame.width) * bounce
-            DispatchQueue.main.async {
-                self.setFrame(NSRect(x: currentX, y: targetFrame.origin.y, width: currentWidth, height: targetFrame.height), display: true)
-            }
-            return t < 1.0
-        }
-        displayLink.start()
-    }
-
-    private func collapse() {
-        isExpanded = false
+        setFrame(targetFrame, display: true)
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.15
-            self.pillContentHost?.animator().alphaValue = 0
+            ctx.duration = 0.25
+            self.pillView.animator().alphaValue = 1
+            self.pillContentHost?.animator().alphaValue = 1
         }
-        guard let screen = NSScreen.builtIn else { return }
-        let screenFrame = screen.frame
-        let targetFrame = NSRect(
-            x: screenFrame.midX - notchWidth / 2,
-            y: screenFrame.maxY - notchHeight,
-            width: notchWidth,
-            height: notchHeight
-        )
-        let startFrame = frame
-        let startTime = CACurrentMediaTime()
-        let duration: Double = 0.3
-        let displayLink = CVDisplayLinkWrapper { [weak self] in
-            guard let self else { return false }
-            let elapsed = CACurrentMediaTime() - startTime
-            let t = min(elapsed / duration, 1.0)
-            let ease = 1.0 - pow(1.0 - t, 3.0)
-            let currentX = startFrame.origin.x + (targetFrame.origin.x - startFrame.origin.x) * ease
-            let currentWidth = startFrame.width + (targetFrame.width - startFrame.width) * ease
-            DispatchQueue.main.async {
-                self.setFrame(NSRect(x: currentX, y: targetFrame.origin.y, width: currentWidth, height: targetFrame.height), display: true)
-                if t >= 1.0 { self.pillContentHost?.alphaValue = 1 }
-            }
-            return t < 1.0
-        }
-        displayLink.start()
     }
 
-    private static func bounceEase(_ t: Double) -> Double {
-        let omega = 12.0
-        let zeta = 0.4
-        return 1.0 - exp(-zeta * omega * t) * cos(sqrt(1.0 - zeta * zeta) * omega * t)
+    private func hidePill() {
+        isExpanded = false
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.2
+            self.pillView.animator().alphaValue = 0
+            self.pillContentHost?.animator().alphaValue = 0
+        }, completionHandler: {
+            self.positionAtNotch()
+        })
     }
 
     // MARK: - Notch size
@@ -276,7 +240,8 @@ class NotchWindow: NSPanel {
     private func positionAtNotch() {
         guard let screen = NSScreen.builtIn else { return }
         let screenFrame = screen.frame
-        setFrame(NSRect(x: screenFrame.midX - notchWidth / 2, y: screenFrame.maxY - notchHeight, width: notchWidth, height: notchHeight), display: true)
+        let w = isExpanded ? Self.pillFixedWidth : notchWidth
+        setFrame(NSRect(x: screenFrame.midX - w / 2, y: screenFrame.maxY - notchHeight, width: w, height: notchHeight), display: true)
     }
 
     private func observeScreenChanges() {
@@ -435,11 +400,18 @@ class NotchHoverWindow: NSPanel {
     }
 
     func showBelow(notchFrame: NSRect) {
-        let width = notchFrame.width
         let sessions = ClaudeMonitor.shared.sessions
-        let rowHeight: CGFloat = 28
-        let height: CGFloat = CGFloat(sessions.count) * rowHeight + 16
-        let x = notchFrame.origin.x
+
+        let width: CGFloat = max(notchFrame.width, 520)
+        let x = notchFrame.midX - width / 2
+
+        // Calculate height: single-line rows
+        var height: CGFloat = 16 // vertical padding
+        for _ in sessions {
+            height += 30 // single row height
+            height += 4 // spacing between sessions
+        }
+        height += 4 // bottom padding
 
         setFrame(NSRect(x: x, y: notchFrame.minY, width: width, height: 0), display: true)
         alphaValue = 1
@@ -472,29 +444,99 @@ struct NotchHoverView: View {
     let sessions: [ClaudeSession]
     var onTap: ((ClaudeSession) -> Void)?
 
+    private static let numberFormatter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.groupingSeparator = ","
+        f.usesGroupingSeparator = true
+        return f
+    }()
+
+    private func formatLines(_ value: Int) -> String {
+        Self.numberFormatter.string(from: NSNumber(value: value)) ?? "\(value)"
+    }
+
+    private func contextBarColor(_ percentage: Double) -> Color {
+        if percentage > 80 { return .red }
+        if percentage > 50 { return .yellow }
+        return .green
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 4) {
             ForEach(sessions) { session in
-                HStack(spacing: 8) {
-                    Text(session.status.emoji)
-                        .font(.system(size: 13))
+                HStack(spacing: 6) {
+                    // LEFT group: icon + name + branch
+                    Image(systemName: session.status.sfSymbol)
+                        .font(.system(size: 11))
+                        .foregroundColor(session.status.sfSymbolColor)
+                        .frame(width: 14)
+
                     Text(session.displayName)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(.white)
+                        .lineLimit(1)
+
+                    if let branch = session.worktreeBranch {
+                        Text(branch)
+                            .font(.system(size: 10, weight: .regular))
+                            .foregroundColor(.white.opacity(0.4))
+                            .lineLimit(1)
+                    }
+
                     Spacer()
-                    Text(session.status.label)
-                        .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.5))
+
+                    // RIGHT group: lines changed + context bar + cost
+
+                    // Lines changed
+                    if (session.linesAdded ?? 0) != 0 || (session.linesRemoved ?? 0) != 0 {
+                        HStack(spacing: 3) {
+                            if let added = session.linesAdded, added != 0 {
+                                Text("+\(formatLines(added))")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(Color.green.opacity(0.8))
+                            }
+                            if let removed = session.linesRemoved, removed != 0 {
+                                Text("-\(formatLines(removed))")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(Color.red.opacity(0.8))
+                            }
+                        }
+                    }
+
+                    // Context progress bar + percentage
+                    if let ctx = session.contextUsedPercentage {
+                        HStack(spacing: 4) {
+                            ZStack(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(Color(white: 0.2))
+                                    .frame(width: 40, height: 4)
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(contextBarColor(ctx))
+                                    .frame(width: 40 * min(ctx / 100.0, 1.0), height: 4)
+                            }
+                            Text("\(Int(ctx))%")
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.5))
+                        }
+                    }
+
+                    // Cost
+                    if let cost = session.costUSD {
+                        Text(String(format: "$%.2f", cost))
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
                 }
                 .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+                .padding(.vertical, 5)
                 .contentShape(Rectangle())
                 .onTapGesture {
                     onTap?(session)
                 }
                 .background(
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.white.opacity(0.001)) // invisible but hittable
+                        .fill(Color.white.opacity(0.001))
                 )
                 .onHover { hovering in
                     if hovering {
@@ -506,9 +548,33 @@ struct NotchHoverView: View {
             }
         }
         .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.black)
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 12, bottomTrailingRadius: 12, topTrailingRadius: 0))
+    }
+}
+
+// MARK: - Rate Limit Bar
+
+struct RateLimitBar: View {
+    let percentage: Double
+
+    private var barColor: Color {
+        if percentage > 80 { return .red }
+        if percentage > 50 { return .yellow }
+        return .green
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color(white: 0.2))
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(barColor)
+                    .frame(width: geo.size.width * min(percentage / 100.0, 1.0))
+            }
+        }
     }
 }
 
@@ -543,51 +609,129 @@ enum NotchDisplayState: Equatable {
 // MARK: - Pill content
 
 struct NotchPillContent: View {
+    private static let sectionLeftWidth: CGFloat = 80
+    private static let sectionCenterWidth: CGFloat = 210
+    private static let sectionRightWidth: CGFloat = 60
+
     private var displayState: NotchDisplayState { .current }
     private var sessions: [ClaudeSession] { ClaudeMonitor.shared.sessions }
+    private var monitor: ClaudeMonitor { ClaudeMonitor.shared }
 
     var body: some View {
-        ZStack {
-            if displayState != .idle {
-                HStack(spacing: 6) {
-                    switch displayState {
-                    case .working:
-                        SpinnerView()
-                            .frame(width: 12, height: 12)
-                        let count = sessions.filter { $0.status == .working }.count
-                        if count > 1 {
-                            Text("\(count)")
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                .foregroundColor(.white)
-                        }
-                    case .taskCompleted:
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.green)
-                    case .waitingForInput:
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.yellow)
-                    case .idle:
-                        EmptyView()
-                    }
+        HStack(spacing: 0) {
+            // SECTION 1 (LEFT): Session status
+            sessionSection
+                .frame(width: Self.sectionLeftWidth, height: 20)
 
-                    Spacer()
+            // SECTION 2 (CENTER): Rate limits
+            rateLimitSection
+                .frame(width: Self.sectionCenterWidth, height: 20)
 
-                    let working = sessions.filter { $0.status == .working }.count
-                    if sessions.count > 0 {
-                        Text("\(working)/\(sessions.count)")
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.7))
-                    }
-                }
-                .padding(.horizontal, 12)
-                .transition(.opacity)
-            }
+            // SECTION 3 (RIGHT): Reserved
+            Color.clear
+                .frame(width: Self.sectionRightWidth, height: 20)
         }
-        .animation(.easeInOut(duration: 0.25), value: displayState)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .offset(y: -2)
+    }
+
+    // MARK: - Session section
+
+    @ViewBuilder
+    private var sessionSection: some View {
+        if displayState != .idle {
+            HStack(spacing: 4) {
+                if displayState == .working {
+                    SpinnerView()
+                        .frame(width: 11, height: 11)
+                } else {
+                    Image(systemName: dominantSFSymbol)
+                        .font(.system(size: 10))
+                        .foregroundColor(dominantSFSymbolColor)
+                }
+
+                let relevant = relevantCount
+                Text("\(relevant)/\(sessions.count)")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundColor(.white)
+            }
+        } else {
+            Color.clear
+        }
+    }
+
+    private var dominantSFSymbol: String {
+        switch displayState {
+        case .waitingForInput: return "exclamationmark.triangle.fill"
+        case .taskCompleted: return "checkmark.circle.fill"
+        case .working: return "bolt.fill"
+        case .idle: return "moon.zzz.fill"
+        }
+    }
+
+    private var dominantSFSymbolColor: Color {
+        switch displayState {
+        case .waitingForInput: return .orange
+        case .taskCompleted: return .green
+        case .working: return .yellow
+        case .idle: return Color(white: 0.5)
+        }
+    }
+
+    private var relevantCount: Int {
+        switch displayState {
+        case .waitingForInput: return sessions.filter { $0.status == .waitingForInput }.count
+        case .taskCompleted: return sessions.filter { $0.status == .taskCompleted }.count
+        case .working: return sessions.filter { $0.status == .working }.count
+        case .idle: return 0
+        }
+    }
+
+    // MARK: - Rate limit section
+
+    @ViewBuilder
+    private var rateLimitSection: some View {
+        let hasRateLimits = monitor.rateLimitFiveHour != nil || monitor.rateLimitSevenDay != nil
+        if hasRateLimits {
+            HStack(spacing: 8) {
+                if let fiveHour = monitor.rateLimitFiveHour {
+                    PillRateLimitIndicator(label: "5h", percentage: fiveHour)
+                }
+                if let sevenDay = monitor.rateLimitSevenDay {
+                    PillRateLimitIndicator(label: "7d", percentage: sevenDay)
+                }
+            }
+        } else {
+            Color.clear
+        }
+    }
+}
+
+// MARK: - Pill sub-components
+
+struct PillRateLimitIndicator: View {
+    let label: String
+    let percentage: Double
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundColor(.white.opacity(0.5))
+            RateLimitBar(percentage: percentage)
+                .frame(width: 60, height: 6)
+            Text("\(Int(percentage))%")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundColor(.white)
+        }
+    }
+}
+
+struct PillSectionDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.15))
+            .frame(width: 0.5, height: 14)
     }
 }
 
