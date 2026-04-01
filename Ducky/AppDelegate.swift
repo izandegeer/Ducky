@@ -6,13 +6,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var notchWindow: NotchWindow?
     private let settings = DuckySettings.shared
     private let claudeMonitor = ClaudeMonitor.shared
+    private let claudeStatusMonitor = ClaudeStatusMonitor.shared
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        DuckyInstaller.installIfNeeded()
+        promptStatusLineInstallIfNeeded()
         setupStatusItem()
         if settings.showNotch {
             setupNotchWindow()
         }
         claudeMonitor.start()
+    }
+
+    private func promptStatusLineInstallIfNeeded() {
+        guard !DuckyInstaller.isStatusLineInstalled(),
+              !settings.statusLineDismissed else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Install Status Line?"
+        alert.informativeText = "Ducky can show rate limits (5h/7d) and session costs by installing a Claude Code status line. Your existing status line will be preserved."
+        alert.addButton(withTitle: "Install")
+        alert.addButton(withTitle: "Not Now")
+        alert.alertStyle = .informational
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            DuckyInstaller.installStatusLine()
+        } else {
+            settings.statusLineDismissed = true
+        }
     }
 
     private func setupStatusItem() {
@@ -90,6 +112,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         soundItem.state = settings.soundEnabled ? .on : .off
         menu.addItem(soundItem)
 
+        // -- Status Line install/remove --
+        if DuckyInstaller.isStatusLineInstalled() {
+            let removeItem = NSMenuItem(
+                title: "Remove Status Line",
+                action: #selector(removeStatusLine),
+                keyEquivalent: ""
+            )
+            removeItem.target = self
+            menu.addItem(removeItem)
+        } else {
+            let installItem = NSMenuItem(
+                title: "Install Status Line",
+                action: #selector(installStatusLine),
+                keyEquivalent: ""
+            )
+            installItem.target = self
+            menu.addItem(installItem)
+        }
+
         let testItem = NSMenuItem(
             title: "Test Notification",
             action: #selector(testNotification),
@@ -126,13 +167,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         settings.soundEnabled.toggle()
     }
 
+    @objc private func installStatusLine() {
+        settings.statusLineDismissed = false
+        DuckyInstaller.installStatusLine()
+    }
+
+    @objc private func removeStatusLine() {
+        DuckyInstaller.removeStatusLine()
+    }
+
     @objc private func testNotification() {
         NotificationCenter.default.post(
             name: .DuckySessionEvent,
             object: nil,
             userInfo: [
                 "name": "test",
-                "emoji": "✅",
+                "emoji": "\u{2705}",
                 "message": ""
             ]
         )
